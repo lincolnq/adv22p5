@@ -4,7 +4,7 @@ use std::io::BufRead;
 // looks like this: 
 //    seeds: 79 14 55 13
 // always 1 line, but should consume 2 lines
-pub fn parse_seeds<R: BufRead>(reader: &mut R) -> Vec<u64> {
+pub fn parse_seeds<R: BufRead>(reader: &mut R) -> Vec<(u64, u64)> {
     let mut seeds = Vec::new();
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
@@ -15,7 +15,7 @@ pub fn parse_seeds<R: BufRead>(reader: &mut R) -> Vec<u64> {
     }
     // consume the newline
     reader.read_line(&mut line).unwrap();
-    seeds
+    seeds.chunks(2).map(|chunk| (chunk[0], chunk[1])).collect()
 }
 
 // parse a map block from the filehandle
@@ -28,14 +28,14 @@ pub fn parse_seeds<R: BufRead>(reader: &mut R) -> Vec<u64> {
 
 // first define a result datatype:
 #[derive(Debug)]
-pub struct ParsedMapBlock {
+pub struct StageMap {
     pub from: String,
     pub to: String,
     pub mappings: Vec<(u64, u64, u64)>,
 }
 
 // now the parser
-pub fn parse_map_block<R: BufRead>(reader: &mut R) -> Option<ParsedMapBlock> {
+pub fn parse_map_block<R: BufRead>(reader: &mut R) -> Option<StageMap> {
     let mut line = String::new();
     reader.read_line(&mut line).ok()?;
     if line.trim().is_empty() {
@@ -62,5 +62,6 @@ pub fn parse_map_block<R: BufRead>(reader: &mut R) -> Option<ParsedMapBlock> {
         mappings.push((seed, soil, prob));
     }
 
-    Some(ParsedMapBlock { from: from, to: to, mappings: mappings })
+    Some(StageMap
+     { from: from, to: to, mappings: mappings })
 }
