@@ -38,30 +38,48 @@ fn main() {
         maps.push(rm);
     }
 
-    let first2 = compose_maps(maps.get(0).unwrap(), maps.get(1).unwrap());
-    println!("Composed 1 and 2: {:?}", first2);
+    let example = 79;
+    let nstages = 7;
 
-    /* How to solve part 2.
-
-    We can start at the final map (humid->location map)
-    Collapse it with prior temp->humid map to make Temp->Location Map
-    (probably doubles size of maps at each stage)
-
-    Eventually find the minimum location of mapped area.
-    *
-    
-    
-    // now run it on all the seeds
-    let mut results = HashMap::new();
-    for (seed,_) in seeds {
-        results.insert(seed, forward_pass_all(&map_blocks, seed));
+    let mut value = example;
+    // apply example to the first nstages in order
+    for i in 0..nstages {
+        let delta = maps[i].get(&value).unwrap_or(&0);
+        println!("Stage: {:?}-to-{:?}: {:?} -> {:?}", map_blocks[i].from, map_blocks[i].to, value, value + delta);
+        value += delta;
     }
-    println!("Results: {:?}", results);
+    
+    // now combine stages and try again
+    let combined = maps.into_iter().take(nstages).reduce(combine_stages).unwrap();
+    println!("Combined {:?} stages: {:?}", nstages, combined);
 
-    // show the lowest result
-    let min = results.iter().min_by_key(|(_, &v)| v).unwrap();
-    println!("Lowest: {:?}", min);
-*/
+    println!("Combined result: {:?}", combined.get(&example).unwrap_or(&0) + example);
+    
+    
+    // now solve part 2 - first construct the seed map
+    let mut seed_map = RangeMap::new();
+    for (seed, count) in seeds {
+        seed_map.insert(seed as i64..(seed + count) as i64, 0);
+    }
+
+    println!("Seed map: {:?}", seed_map);
+
+    // and then intersect it with the combined map.
+    let final_map = compose_maps_new(|r, x1, x2| {
+        // where the seed map has nothing, we just return None
+        if x1.is_none() {
+            return None;
+        }
+
+        // otherwise use r's start plus the delta (x2) as the result
+        Some((r.clone(), r.start + x2.unwrap_or(&0)))
+
+    }, &seed_map, &combined);
+    
+    println!("Final map: {:?}", final_map);
+    // find the minimum value in the final map
+    let result = final_map.iter().map(|(_, v)| v).min();
+    println!("Min: {:?}", result);
 }
 
 
@@ -103,224 +121,147 @@ fn offset_range(range: Range<i64>, offset: i64) -> Range<i64> {
     (range.start as i64 + offset) as i64..(range.end as i64 + offset) as i64
 }
 
+// implement RangeMap.pop_first()
+// returns clones of the range and value
+fn pop_first<K, V>(rm: &mut RangeMap<K, V>) -> Option<(Range<K>, V)>
+where K: Ord + Clone, V: Eq + Clone 
+{
+    let (range, value) = rm.first_range_value()?;
+    let rc = range.clone();
+    let vc = value.clone();
+    rm.remove(rc.clone());
+    Some((rc, vc))
+}
 
-// 
-
-
-// add_overlapping_range takes a step in merging range1 into the given rangemap by summing overlapping ranges.
-// The rangemap must not have any overlapping ranges before this step.
-// Returns the remaining range from range1 that has not been merged (e.g. remnant after the first overlap found)
-// or None if range1 was fully merged.
-// In the result, whenever range start/ends comes from range1, we offset those by `-range1val` in order to place the 
-// output map into the x-space
-fn add_overlapping_range(result: &mut RangeMap<i64, i64>, range1: Range<i64>, range1val: i64) -> Option<Range<i64>> {
-
-    let ovl2 = result.overlapping(&range1).next();
-    if ovl2.is_none() {
-        // no overlap
-        println!("No overlap for range: {:?}", range1);
-        result.insert(offset_range(range1.clone(), -range1val), range1val);
-        return None;
+// implement RangeMap.insert() with an optional pair of (Range, Value)
+fn insert<K, V>(rm: &mut RangeMap<K, V>, kv: Option<(Range<K>, V)>)
+where K: Ord + Clone, V: Eq + Clone 
+{
+    if let Some((k, v)) = kv {
+        rm.insert(k, v);
     }
-    let (range2c, &range2val) = ovl2.unwrap();
-    let range2 = range2c.clone();
-    result.remove(range2.clone());
-    println!("First overlapping range for {:?}: {:?}", range1, range2);
+}
 
-    // handle pre-overlap
-    if range1.start < range2.start {
-        // map1's range starts first
-        let new_range = range1.start - range1val..range2.start;
-        println!("Pre-overlap x: {:?} = {}", new_range, range1val);
-        result.insert(new_range, range1val);
-    } else if range2.start < range1.start {
-        // map2's range starts first
-        let new_range = range2.start..range1.start - range1val;
-        println!("Pre-overlap: {:?} = {}", new_range, range2val);
-        result.insert(new_range, range2val);
-    } // else they start at the same time, no need for pre-overlap
-
-    // now we need to do the overlapping section
-    let start_of_overlap = max(range1.start, range2.start);
-    let end_of_overlap = min(range1.end, range2.end);
-    println!("Overlap: {:?} = {}", start_of_overlap..end_of_overlap, range1val + range2val);
-    result.insert(offset_range(start_of_overlap..end_of_overlap, -range1val), range1val + range2val);
-
-    // handle post-overlap
-    if range2.end > range1.end {
-        // map2's range is longer, so add rest of range2
-        let new_range = range1.end..range2.end;
-        // this one doesn't get offset, it's essentially the remnant which was splitout
-        result.insert(new_range, range2val);
-
-        // no range1 remnant
-        None
-    } else if range1.end > range2.end {
-        // range1 is longer, so return the remnant
-        Some(range2.end..range1.end)
+// implement intersection on Range<K>
+fn intersection<K>(
+    r1: &Range<K>, r2: &Range<K>
+) -> Option<Range<K>> 
+where K: Ord + Clone
+{
+    let start = max(r1.start.clone(), r2.start.clone());
+    let end = min(r1.end.clone(), r2.end.clone());
+    if start < end {
+        Some(start..end)
     } else {
-        // they end at the same time, no remnant
         None
     }
 }
 
-
-// compose_maps takes two RangeMaps and composes them into a new RangeMap by calling a zipper function
+// compose_maps_new takes two RangeMaps and composes them into a new RangeMap by calling a zipper function
 // on each subrange of the two maps. 
 // We automatically divide ranges when the two maps collide.
 // The left and right arguments to the zipper function are the current range and value of the two maps, respectively. 
-// The zipper function should return a new range and value to insert into the result map.
+// The zipper function should return a new range and value to insert into the result map, or None
+// if you don't want to insert anything.
 
-type Zipper = fn(Option(&Range<i64>, &i64), Option(&Range<i64>, &i64)) -> (Range<i64>, i64)
+type Zipper<K,V> = fn(Range<K>, Option<&V>, Option<&V>) -> Option<(Range<K>, V)>;
 
-fn compose_maps_new(zipper: Zipper, map1: &RangeMap<i64, i64>, map2: &RangeMap<i64, i64>) -> RangeMap<i64, i64> {
-    // walk both maps in parallel -- need two iterators, and we'll create new ranges in our output map
+fn compose_maps_new<K, V>(
+    zipper: Zipper<K, V>, 
+    map1: &RangeMap<K, V>,
+    map2: &RangeMap<K, V>)
+     -> RangeMap<K, V> 
+    where K: Ord + Clone, V: Eq + Clone 
+{
     let mut result = RangeMap::new();
 
-    let mut iter1 = map1.iter();
-    let mut iter2 = map2.iter();
+    // Our algo requires mutating both input maps, so we just clone them.
+    let mut m1 = map1.clone();
+    let mut m2 = map2.clone();
 
-    let mut next1 = iter1.next();
-    let mut next2 = iter2.next();
+    //println!("Starting CMN {:?} + {:?}", m1, m2);
 
-    let mut nextpt = None;
 
-    loop {
-        if next1.is_none() && next2.is_none() {
-            // both maps are done
-            break;
+    // Consume map 1 first
+    while let Some(mut r1) = pop_first(&mut m1) {
+        // r1 is (range, value)
+
+        //println!("Examining M1: {:?}", r1);
+
+        
+        // try to intersect
+        while let Some(r2) = m2.overlapping(r1.clone().0).next() {
+            let int = intersection(&r1.0, r2.0).unwrap();
+            //println!("First overlap M2: {:?} int: {:?}", r2, int);
+            let v2 = r2.1.clone();
+
+            // ok, there is an intersection. first yield the pre-intersect
+            if r1.0.start < int.start {
+                //println!("Pre-intersect: {:?}", int);
+                insert(&mut result, zipper(r1.0.start..int.clone().start, Some(&r1.1), None));
+            }
+            // now yield the intersect
+            insert(&mut result, zipper(int.clone(), Some(&r1.1), Some(&v2)));
+            // and remove the intersection from m2
+            m2.remove(int.clone());
+            // now our r1 'remnant' is the remainder of r1, to be intersected
+            // with the remainder of m2. Note that thsi could be a zero length
+            // remnant but will not be negative.
+            r1 = ((int.end..r1.0.end), r1.1);
         }
 
-        if next1.is_none() {
-            for (range2, delta2) in iter2 {
-                // map1 is done, so just zipper all of map2
-                result.insert(zipper(None, Some(range2, delta2)));
-            }
-            break;
-        } else if next2.is_none() {
-            for (range1, delta1) in iter1 {
-                // map2 is done, so just add all of map1
-                result.insert(zipper(Some(range1, delta1), None));
-            }
-            break;
+        // ok, no more overlapping sections for r1, thus we can insert it
+        // (if non-zero)
+        if r1.0.start < r1.0.end {
+            insert(&mut result, zipper(r1.0.start..r1.0.end, Some(&r1.1), None));
         }
-
-        let (range1, delta1) = next1.unwrap();
-        let (range2, delta2) = next2.unwrap();
-
-
-        if range1.start < range2.start { 
-            if range1.end < range2.start {
-                // range1 ends before range2 starts
-                result.insert(zipper(Some(range1, delta1), None));
-                next1 = iter1.next();
-            } else {
-                // range1 overlaps range2 - do two zippers
-                let newrange = range1.start..range2.start;
-                result.insert(zipper(Some(newrange, delta1), Some(range2, delta2));
-                next1 = Some(range2.start..range1.end);
-            }
-            // create new range from range1 until either range2 starts 
-            let newrange = range1.start..range2.start;
-            result.insert(zipper(Some(newrange, delta1), None));
-        }
-
-        break;
-    
     }
+
+    // ok, no more m1. insert all remaining items from m2 as non-overlapping regions
+    for (r, r2val) in m2.iter() {
+        insert(&mut result, zipper(r.clone(), None, Some(r2val)))
+    }
+
     result
 }
 
-
-
-// compose_maps takes two RangeMaps (x-y and y-z) and composes them into a new RangeMap. This is done by
+// combine_stages takes two RangeMaps (x-y and y-z) and composes them into a new RangeMap. This is done by
 // converting all our map1 ys (outputs) into the space of map2's ys (inputs) in order to find overlaps, but 
 // we then back it into x-space
 
-fn compose_maps(map1: &RangeMap<i64, i64>, map2: &RangeMap<i64, i64>) -> RangeMap<i64, i64> {
+// EXAMPLE
+//seed-to-soil map:
+//98..100 -> 50..52 [-48] len=2
+//50..98 -> 52..100 [+2] len=48
 
-    // first invert map1
-    //let map1_inv = invert_map(map1);
+// INVERTED: {50..52:+48, 52..100:-2}
 
+//soil-to-fertilizer map:
+//15..52 -> 0..37 [-15] len=37
+//52..54 -> 37..39 [-15] len=2
+//0..15 -> 39..54 [+39] len=15
+
+// RESULT
+//seed-to-fertilizer map:
+//0..15 -> 39..54 [+39] len=15
+//15..50 -> 0..35 [-15] len=35
+//50..52 -> 37..39 [-13] len=2
+//52..98 -> 54..100 [+2] len=46
+//98..100 -> 35..37 [-63] len=2
+
+
+fn combine_stages(map1: RangeMap<i64, i64>, map2: RangeMap<i64, i64>) -> RangeMap<i64, i64> {
     
+    let map1_inv = invert_map(&map1);
 
+    compose_maps_new(|r, x1, x2| {
+        // the new delta is just the sum of whichever are present, but negate
+        // the delta of x1 since it was from the inverse map
+        let delta = -x1.unwrap_or(&0) + x2.unwrap_or(&0);
 
-
-    // we'll make a new version of map2. For each map1 range, we need to convert it into map2
-    // space, and then add its deltas into the result.
-    let mut result = map2.clone();
-    
-    println!("Compose_maps called with {:?}", result);
-
-
-    for (range1, delta) in map1.iter() {
-
-        // convert the x-space of this range into its y-space by adding delta
-        let newrange = offset_range(range1.clone(), *delta);
-
-        //let range1_map1_start = range2.start as i64 + map1_inv.get(&range2.start).unwrap_or(&0);
-        //let range2_len = (range2.end - range2.start) as i64;
-        //let mut range2_map1 = Some(range2_map1_start as u64..(range2_map1_start + range2_len) as u64);
-
-        println!("Merging newrange: {:?} (was: {:?}) into result", newrange, range1);
-        let mut mayberange = Some(newrange);
-
-        while let Some(range) = mayberange {
-            mayberange = add_overlapping_range(&mut result, range, *delta);
-            println!("Middle result is {:?}", result);
-
-        }
-
-        println!("Merged: result is {:?}", result);
-
-    }
-    result
+        // the range given is in y-space, needs to be in x-space, so
+        // map it back
+        let range = offset_range(r, *x1.unwrap_or(&0));
+        Some((range, delta))
+    }, &map1_inv, &map2)
 }
-
-/*
-    Collapse two maps e.g. temp->humid map, humid->location, to make Temp->Location Map
-    (probably doubles size of maps at each stage)
-
-example:
-
-x-to-y map:
-y x range
-0 69 1
-1 0 69
-
-y-to-z map:
-z y range
-60 56 37
-56 93 4
-
-z=56_4 -> y=93_4 -> x=93_4*
-z=60_37 -> y=56_37 -> x=55_37
-
-*
-fn collapse_maps(map1: &StageMap, map2: &StageMap) -> StageMap {
-
-    let mut mappings = Vec::new();
-    for (yst, xst, range1) in map1.mappings {
-        for (zst, yst, range2) in map2.mappings {
-            
-        }
-    }
-
-    StageMap {
-        from: map1.from.clone(),
-        to: map2.to.clone(),
-        mappings: map1.mappings.iter().flat_map(|(seed1, soil1, prob1)| {
-            map2.mappings.iter().map(move |(seed2, soil2, prob2)| {
-                (seed1, soil2, prob1 * prob2)
-            })
-        }).collect()
-    }
-}
-
-type Stage = BTreeMap<u64, u64>;
-
-fn find_in_stage(stage: &Stage, x: u64) -> Option<u64> {
-
-    let next = stage.range(x..).next()?
-    
-}*/
